@@ -6,6 +6,7 @@ pub(crate) struct Options {
     pub prepend_sudo: bool,
     pub separate_allowed_ips: bool,
     pub extract_names_config_files: Option<Vec<String>>,
+    pub peer_names_file: Option<String>,
     pub interfaces: Option<Vec<String>>,
     pub export_remote_ip_and_port: bool,
     pub export_latest_handshake_delay: bool,
@@ -20,6 +21,9 @@ impl Options {
             extract_names_config_files: matches
                 .get_many("extract_names_config_files")
                 .map(|e: ValuesRef<'_, String>| e.into_iter().map(|a| a.to_owned()).collect()),
+            peer_names_file: matches
+                .get_one::<String>("peer_names_config_file")
+                .map(|a| a.to_owned()),
             interfaces: matches
                 .get_many("interfaces")
                 .map(|e: ValuesRef<'_, String>| e.into_iter().map(|a| a.to_string()).collect()),

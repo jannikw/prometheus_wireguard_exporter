@@ -1,9 +1,10 @@
 use anyhow::Context;
-use clap::{crate_authors, crate_name, crate_version, value_parser, Arg};
+use clap::{crate_authors, crate_name, crate_version, value_parser, Arg, ArgAction};
 use hyper::{Body, Request};
 use log::{debug, info, trace};
 use prometheus_exporter_base::prelude::{Authorization, ServerOptions};
 use std::env;
+use std::{borrow::Cow, collections::HashMap};
 mod options;
 use options::Options;
 mod wireguard;
@@ -17,7 +18,7 @@ mod wireguard_config;
 use prometheus_exporter_base::render_prometheus;
 use std::net::IpAddr;
 use std::sync::Arc;
-use wireguard_config::peer_entry_hashmap_try_from;
+use wireguard_config::{peer_entry_hashmap_try_from, PeerEntry};
 
 async fn perform_request(
     _req: Request<Body>,
@@ -42,10 +43,59 @@ async fn perform_request(
         .with_context(|| "failed to read peer config file")? // bail out if there was an error
         .map(|strings| strings.join("\n")); // now join the strings in a new string
 
+    let more_peer_names = options
+        .peer_names_file
+        .as_ref()
+        .map(|file| std::fs::read_to_string(file).with_context(|| "failed to read peer names file"))
+        .transpose()?
+        .map(|cfg| serde_json::from_str::<HashMap<String, String>>(&cfg))
+        .transpose()
+        .with_context(|| {
+            "failed to parse peer names: expected JSON object mapping public keys to names"
+        })?;
+
     let peer_entry_hashmap = peer_entry_contents
         .as_ref()
         .map(|contents| peer_entry_hashmap_try_from(contents))
         .transpose()?;
+
+    // Combine peer_entry_hashmap and more_peer_names into a single hashmap
+    let peer_entry_hashmap = match (peer_entry_hashmap, &more_peer_names) {
+        (Some(mut peer_entry_hashmap), Some(more_peer_names)) => {
+            peer_entry_hashmap.extend(more_peer_names.iter().map(|(public_key, friendly_name)| {
+                (
+                    public_key.as_str(),
+                    PeerEntry {
+                        public_key,
+                        allowed_ips: "",
+                        friendly_description: Some(FriendlyDescription::Name(Cow::Borrowed(
+                            friendly_name,
+                        ))),
+                    },
+                )
+            }));
+            Some(peer_entry_hashmap)
+        }
+        (Some(peer_entry_hashmap), None) => Some(peer_entry_hashmap),
+        (None, Some(more_peer_names)) => Some(
+            more_peer_names
+                .iter()
+                .map(|(public_key, friendly_name)| {
+                    (
+                        public_key.as_str(),
+                        PeerEntry {
+                            public_key,
+                            allowed_ips: "",
+                            friendly_description: Some(FriendlyDescription::Name(Cow::Borrowed(
+                                friendly_name,
+                            ))),
+                        },
+                    )
+                })
+                .collect(),
+        ),
+        (None, None) => None,
+    };
 
     trace!("peer_entry_hashmap == {:#?}", peer_entry_hashmap);
 
@@ -178,6 +228,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .env("PROMETHEUS_WIREGUARD_EXPORTER_CONFIG_FILE_NAMES")
                 .help("If set, the exporter will look in the specified WireGuard config file for peer names (must be in [Peer] definition and be a comment). Multiple files are supported.")
                 .use_value_delimiter(false))
+        .arg(
+            Arg::new("peer_names_config_file")
+                .long("peer_names_config_file")
+                // .num_args(0..1)
+                .env("PROMETHEUS_WIREGUARD_EXPORTER_PEER_NAMES_CONFIG_FILE")
+                .help("If set, the exporter will look in the specified config file for mapping peer public keys to names.")
+                .action(ArgAction::Set))
         .arg(
             Arg::new("interfaces")
                 .short('i')
